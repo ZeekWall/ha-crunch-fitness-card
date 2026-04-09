@@ -6,6 +6,161 @@
  * Compatible with HACS.
  */
 
+// ─── Visual Editor ────────────────────────────────────────────────────────────
+
+class CrunchFitnessCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this._config = {};
+    this._hass = null;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const picker = this.querySelector('ha-entity-picker');
+    if (picker) picker.hass = hass;
+  }
+
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  _render() {
+    this.innerHTML = `
+      <div class="editor">
+        <ha-entity-picker
+          id="entity-picker"
+          label="Entity (required)"
+          allow-custom-entity
+        ></ha-entity-picker>
+
+        <label class="field-label">Title (optional)</label>
+        <input
+          class="text-input"
+          id="title-input"
+          type="text"
+          placeholder="Defaults to location name"
+          value="${this._escapeAttr(this._config.title || '')}"
+        />
+
+        <div class="toggle-row">
+          <label for="all-classes-toggle">Show full week schedule</label>
+          <input
+            type="checkbox"
+            id="all-classes-toggle"
+            ${this._config.show_all_classes ? 'checked' : ''}
+          />
+        </div>
+
+        <label class="field-label">Max classes to show (optional)</label>
+        <input
+          class="text-input"
+          id="max-input"
+          type="number"
+          min="1"
+          placeholder="Show all"
+          value="${this._escapeAttr(this._config.max_classes != null ? String(this._config.max_classes) : '')}"
+        />
+      </div>
+
+      <style>
+        .editor {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          padding: 16px;
+        }
+        ha-entity-picker {
+          display: block;
+        }
+        .field-label {
+          font-size: 12px;
+          color: var(--secondary-text-color, #727272);
+          margin-bottom: -6px;
+        }
+        .text-input {
+          width: 100%;
+          box-sizing: border-box;
+          padding: 8px 10px;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 4px;
+          background: var(--card-background-color, #fff);
+          color: var(--primary-text-color, #212121);
+          font-size: 14px;
+        }
+        .text-input:focus {
+          outline: none;
+          border-color: var(--primary-color, #e31837);
+        }
+        .toggle-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          font-size: 14px;
+          color: var(--primary-text-color, #212121);
+        }
+        input[type="checkbox"] {
+          width: 18px;
+          height: 18px;
+          cursor: pointer;
+          accent-color: var(--primary-color, #e31837);
+        }
+      </style>
+    `;
+
+    // Set hass on the entity picker (must be done as property, not attribute)
+    const picker = this.querySelector('#entity-picker');
+    if (picker) {
+      picker.hass = this._hass;
+      picker.value = this._config.entity || '';
+      picker.includeDomains = ['sensor'];
+      picker.addEventListener('value-changed', (e) => {
+        this._updateConfig('entity', e.detail.value);
+      });
+    }
+
+    const titleInput = this.querySelector('#title-input');
+    titleInput.addEventListener('change', (e) => {
+      this._updateConfig('title', e.target.value || null);
+    });
+
+    const allToggle = this.querySelector('#all-classes-toggle');
+    allToggle.addEventListener('change', (e) => {
+      this._updateConfig('show_all_classes', e.target.checked);
+    });
+
+    const maxInput = this.querySelector('#max-input');
+    maxInput.addEventListener('change', (e) => {
+      const val = e.target.value ? parseInt(e.target.value, 10) : null;
+      this._updateConfig('max_classes', val);
+    });
+  }
+
+  _updateConfig(field, value) {
+    const newConfig = { ...this._config };
+    if (value === null || value === undefined || value === '') {
+      delete newConfig[field];
+    } else {
+      newConfig[field] = value;
+    }
+    this._config = newConfig;
+    this.dispatchEvent(new CustomEvent('config-changed', {
+      detail: { config: this._config },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  _escapeAttr(str) {
+    return String(str).replace(/"/g, '&quot;');
+  }
+}
+
+customElements.define('crunch-fitness-card-editor', CrunchFitnessCardEditor);
+
+// ─── Main Card ────────────────────────────────────────────────────────────────
+
 class CrunchFitnessCard extends HTMLElement {
   constructor() {
     super();
@@ -14,16 +169,15 @@ class CrunchFitnessCard extends HTMLElement {
     this._hass = null;
   }
 
+  static getConfigElement() {
+    return document.createElement('crunch-fitness-card-editor');
+  }
+
   static getStubConfig() {
-    return {
-      entity: 'sensor.crunch_location_schedule',
-    };
+    return {};
   }
 
   setConfig(config) {
-    if (!config.entity) {
-      throw new Error('Please define an entity (e.g. sensor.crunch_location_schedule)');
-    }
     this._config = {
       title: null,
       show_all_classes: false,
@@ -39,7 +193,7 @@ class CrunchFitnessCard extends HTMLElement {
   }
 
   getCardSize() {
-    const stateObj = this._hass && this._hass.states[this._config.entity];
+    const stateObj = this._hass && this._config.entity && this._hass.states[this._config.entity];
     if (!stateObj) return 3;
     const attrs = stateObj.attributes;
     const classes = this._config.show_all_classes
@@ -51,14 +205,12 @@ class CrunchFitnessCard extends HTMLElement {
 
   _formatTime(timeStr) {
     if (!timeStr) return '';
-    // Handles ISO strings or "HH:MM" strings
     try {
       const d = new Date(timeStr);
       if (!isNaN(d.getTime())) {
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       }
     } catch (_) {}
-    // Already a simple time string
     return timeStr;
   }
 
@@ -79,9 +231,7 @@ class CrunchFitnessCard extends HTMLElement {
     if (!timeStr) return false;
     try {
       const classTime = new Date(timeStr);
-      if (!isNaN(classTime.getTime())) {
-        return classTime < new Date();
-      }
+      if (!isNaN(classTime.getTime())) return classTime < new Date();
     } catch (_) {}
     return false;
   }
@@ -100,35 +250,49 @@ class CrunchFitnessCard extends HTMLElement {
       .replace(/"/g, '&quot;');
   }
 
-  _renderError(message) {
+  _renderPrompt(message) {
     this.shadowRoot.innerHTML = `
       <ha-card>
-        <div class="error">
-          <span class="icon">⚠️</span>
-          <span>${this._escapeHtml(message)}</span>
+        <div class="card-header">
+          <ha-icon icon="mdi:dumbbell"></ha-icon>
+          <span class="location">Crunch Fitness</span>
         </div>
+        <div class="prompt">${this._escapeHtml(message)}</div>
       </ha-card>
       <style>
-        ha-card { padding: 16px; }
-        .error {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          color: var(--error-color, #db4437);
+        ha-card { overflow: hidden; background: var(--card-background-color, #fff); }
+        .card-header {
+          display: flex; align-items: center; gap: 10px;
+          padding: 14px 16px 12px; background: #e31837;
+          color: #fff; font-size: 16px; font-weight: 600;
+        }
+        .card-header ha-icon { --mdc-icon-size: 22px; color: #fff; }
+        .prompt {
+          padding: 20px 16px;
+          color: var(--secondary-text-color, #727272);
           font-size: 14px;
+          font-style: italic;
+          text-align: center;
         }
       </style>
     `;
   }
 
   _render() {
-    if (!this._config || !this._hass) return;
+    if (!this._config) return;
+
+    if (!this._config.entity) {
+      this._renderPrompt('Please configure a Crunch Fitness sensor entity.');
+      return;
+    }
+
+    if (!this._hass) return;
 
     const entityId = this._config.entity;
     const stateObj = this._hass.states[entityId];
 
     if (!stateObj) {
-      this._renderError(`Entity not found: ${entityId}`);
+      this._renderPrompt(`Entity not found: ${entityId}`);
       return;
     }
 
@@ -210,9 +374,7 @@ class CrunchFitnessCard extends HTMLElement {
       </ha-card>
 
       <style>
-        :host {
-          display: block;
-        }
+        :host { display: block; }
 
         ha-card {
           overflow: hidden;
@@ -221,7 +383,6 @@ class CrunchFitnessCard extends HTMLElement {
           color: var(--primary-text-color, #212121);
         }
 
-        /* ── Header ── */
         .card-header {
           display: flex;
           align-items: center;
@@ -233,26 +394,16 @@ class CrunchFitnessCard extends HTMLElement {
           font-weight: 600;
           letter-spacing: 0.5px;
         }
+        .card-header ha-icon { --mdc-icon-size: 22px; color: #fff; }
+        .location { flex: 1; }
 
-        .card-header ha-icon {
-          --mdc-icon-size: 22px;
-          color: #fff;
-        }
-
-        .location {
-          flex: 1;
-        }
-
-        /* ── Next class card ── */
         .next-class-card {
           margin: 14px 14px 0;
           padding: 12px 14px;
           background: var(--primary-color, #e31837);
           border-radius: 8px;
           color: #fff;
-          position: relative;
         }
-
         .next-label {
           font-size: 10px;
           font-weight: 700;
@@ -260,20 +411,8 @@ class CrunchFitnessCard extends HTMLElement {
           opacity: 0.85;
           margin-bottom: 4px;
         }
-
-        .next-name {
-          font-size: 20px;
-          font-weight: 700;
-          line-height: 1.2;
-        }
-
-        .next-time {
-          font-size: 15px;
-          font-weight: 600;
-          margin: 2px 0 6px;
-          opacity: 0.9;
-        }
-
+        .next-name { font-size: 20px; font-weight: 700; line-height: 1.2; }
+        .next-time { font-size: 15px; font-weight: 600; margin: 2px 0 6px; opacity: 0.9; }
         .next-details {
           display: flex;
           flex-wrap: wrap;
@@ -283,7 +422,6 @@ class CrunchFitnessCard extends HTMLElement {
           align-items: center;
         }
 
-        /* ── No classes ── */
         .no-classes {
           padding: 20px 16px;
           text-align: center;
@@ -292,7 +430,6 @@ class CrunchFitnessCard extends HTMLElement {
           font-size: 14px;
         }
 
-        /* ── Section header ── */
         .section-header {
           padding: 14px 16px 6px;
           font-size: 11px;
@@ -302,10 +439,7 @@ class CrunchFitnessCard extends HTMLElement {
           text-transform: uppercase;
         }
 
-        /* ── Class list ── */
-        .class-list {
-          padding: 0 8px 4px;
-        }
+        .class-list { padding: 0 8px 4px; }
 
         .class-row {
           display: flex;
@@ -316,15 +450,8 @@ class CrunchFitnessCard extends HTMLElement {
           transition: background 0.15s;
           position: relative;
         }
-
-        .class-row:hover {
-          background: var(--secondary-background-color, rgba(0,0,0,0.04));
-        }
-
-        .class-row.past {
-          opacity: 0.4;
-        }
-
+        .class-row:hover { background: var(--secondary-background-color, rgba(0,0,0,0.04)); }
+        .class-row.past { opacity: 0.4; }
         .class-row.is-next {
           background: rgba(227, 24, 55, 0.08);
           border-left: 3px solid #e31837;
@@ -338,12 +465,7 @@ class CrunchFitnessCard extends HTMLElement {
           color: var(--secondary-text-color, #727272);
           font-variant-numeric: tabular-nums;
         }
-
-        .class-info {
-          flex: 1;
-          min-width: 0;
-        }
-
+        .class-info { flex: 1; min-width: 0; }
         .class-name {
           font-size: 14px;
           font-weight: 500;
@@ -351,7 +473,6 @@ class CrunchFitnessCard extends HTMLElement {
           overflow: hidden;
           text-overflow: ellipsis;
         }
-
         .class-meta {
           display: flex;
           flex-wrap: wrap;
@@ -361,7 +482,6 @@ class CrunchFitnessCard extends HTMLElement {
           color: var(--secondary-text-color, #727272);
           margin-top: 1px;
         }
-
         .next-badge {
           font-size: 9px;
           font-weight: 700;
@@ -373,7 +493,6 @@ class CrunchFitnessCard extends HTMLElement {
           white-space: nowrap;
         }
 
-        /* ── Footer ── */
         .card-footer {
           display: flex;
           justify-content: space-between;
@@ -385,10 +504,7 @@ class CrunchFitnessCard extends HTMLElement {
           margin-top: 6px;
         }
 
-        .dot {
-          opacity: 0.5;
-          margin: 0 2px;
-        }
+        .dot { opacity: 0.5; margin: 0 2px; }
       </style>
     `;
   }
