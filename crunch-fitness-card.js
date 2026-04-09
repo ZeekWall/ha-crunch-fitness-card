@@ -66,6 +66,11 @@ class CrunchFitnessCardEditor extends HTMLElement {
           <input type="checkbox" id="all-classes-toggle" ${this._config.show_all_classes ? 'checked' : ''} />
         </div>
 
+        <div class="toggle-row">
+          <label for="hide-past-toggle">Hide finished classes</label>
+          <input type="checkbox" id="hide-past-toggle" ${this._config.hide_past_classes ? 'checked' : ''} />
+        </div>
+
         <label class="field-label">Max height in pixels (default: 400)</label>
         <input class="text-input" id="max-height-input" type="number" min="100" step="50"
           placeholder="400"
@@ -138,6 +143,10 @@ class CrunchFitnessCardEditor extends HTMLElement {
       this._updateConfig('show_all_classes', e.target.checked);
     });
 
+    this.querySelector('#hide-past-toggle').addEventListener('change', (e) => {
+      this._updateConfig('hide_past_classes', e.target.checked);
+    });
+
     this.querySelector('#max-height-input').addEventListener('change', (e) => {
       this._updateConfig('max_height', e.target.value ? parseInt(e.target.value, 10) : null);
     });
@@ -183,7 +192,7 @@ class CrunchFitnessCard extends HTMLElement {
 
   setConfig(config) {
     let entities = config.entities?.length ? config.entities : config.entity ? [config.entity] : [];
-    this._config = { title: null, show_all_classes: false, max_height: 400, ...config, entities };
+    this._config = { title: null, show_all_classes: false, hide_past_classes: false, max_height: 400, ...config, entities };
     if (config.instructor && !this._filterText) this._filterText = config.instructor;
     this._fullRender();
   }
@@ -447,7 +456,8 @@ class CrunchFitnessCard extends HTMLElement {
     if (!container) return;
 
     const { source, multiLocation } = this._gatherClasses();
-    const filtered = this._applyFilter(source, this._filterText);
+    let filtered = this._applyFilter(source, this._filterText);
+    if (this._config.hide_past_classes) filtered = filtered.filter(c => !this._isClassPast(c));
     const nextClass = filtered.find(c => !this._isClassPast(c)) || null;
     this._displayedClasses = filtered;
 
