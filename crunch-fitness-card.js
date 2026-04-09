@@ -172,6 +172,15 @@ class CrunchFitnessCard extends HTMLElement {
   static getConfigElement() { return document.createElement('crunch-fitness-card-editor'); }
   static getStubConfig() { return { entities: [] }; }
 
+  static getLayoutOptions() {
+    return {
+      grid_columns: 4,
+      grid_rows: 6,
+      grid_min_columns: 2,
+      grid_min_rows: 2,
+    };
+  }
+
   setConfig(config) {
     let entities = config.entities?.length ? config.entities : config.entity ? [config.entity] : [];
     this._config = { title: null, show_all_classes: false, max_height: 400, ...config, entities };
@@ -188,9 +197,7 @@ class CrunchFitnessCard extends HTMLElement {
     }
   }
 
-  getCardSize() {
-    return Math.ceil((this._config.max_height || 400) / 50) + 2;
-  }
+  getCardSize() { return 4; }
 
   // ── Data ────────────────────────────────────────────────────────────────────
 
@@ -263,6 +270,8 @@ class CrunchFitnessCard extends HTMLElement {
     }
 
     const maxH = this._config.max_height || 400;
+    this.style.setProperty('--crunch-list-max-height', `${maxH}px`);
+
     const errorHtml = errors.length
       ? `<div class="error-row">Entity not found: ${errors.map(e => this._escapeHtml(e)).join(', ')}</div>`
       : '';
@@ -282,7 +291,7 @@ class CrunchFitnessCard extends HTMLElement {
           <button id="search-clear" class="clear-btn" aria-label="Clear">✕</button>
         </div>
 
-        <div id="class-container" class="class-container" style="max-height:${maxH}px"></div>
+        <div id="class-container" class="class-container"></div>
 
         <div class="card-footer">
           <span>Week: <strong>${this._escapeHtml(String(totalWeek))}</strong> classes</span>
@@ -291,8 +300,8 @@ class CrunchFitnessCard extends HTMLElement {
       </ha-card>
 
       <style>
-        :host { display: block; }
-        ha-card { overflow: hidden; font-family: var(--paper-font-body1_-_font-family, sans-serif); background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); }
+        :host { display: block; height: 100%; }
+        ha-card { display: flex; flex-direction: column; height: 100%; overflow: hidden; font-family: var(--paper-font-body1_-_font-family, sans-serif); background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); }
 
         /* Header */
         .card-header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: #e31837; color: #fff; }
@@ -308,8 +317,8 @@ class CrunchFitnessCard extends HTMLElement {
         .clear-btn.visible { display: block; }
         .clear-btn:hover { color: var(--primary-text-color, #212121); }
 
-        /* Scrollable class list */
-        .class-container { overflow-y: auto; padding: 2px 6px 4px; scrollbar-width: thin; scrollbar-color: var(--divider-color, #ccc) transparent; }
+        /* Scrollable class list — flex:1 fills grid-allocated height; max-height is fallback for non-grid use */
+        .class-container { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 6px 4px; scrollbar-width: thin; scrollbar-color: var(--divider-color, #ccc) transparent; max-height: var(--crunch-list-max-height, 400px); }
         .class-container::-webkit-scrollbar { width: 4px; }
         .class-container::-webkit-scrollbar-track { background: transparent; }
         .class-container::-webkit-scrollbar-thumb { background: var(--divider-color, #ccc); border-radius: 2px; }
