@@ -3,7 +3,7 @@
  * https://github.com/ZeekWall/ha-crunch-fitness-card
  *
  * Displays class schedules from the Crunch Fitness integration.
- * Supports multiple gym locations, live search filtering, and spot counts.
+ * Supports multiple gym locations, live search, spot counts, and calendar booking.
  * Compatible with HACS.
  */
 
@@ -50,6 +50,12 @@ class CrunchFitnessCardEditor extends HTMLElement {
 
         <div class="divider"></div>
 
+        <div class="section-label">Calendar</div>
+        <ha-entity-picker id="calendar-picker" label="Calendar for bookings" allow-custom-entity></ha-entity-picker>
+        <p class="hint">Select a writable HA calendar. Clicking a class will offer to add it as an event.</p>
+
+        <div class="divider"></div>
+
         <label class="field-label">Card title (optional)</label>
         <input class="text-input" id="title-input" type="text"
           placeholder="Defaults to location name(s)"
@@ -78,6 +84,7 @@ class CrunchFitnessCardEditor extends HTMLElement {
         .add-btn:hover { background: rgba(227,24,55,0.06); }
         .divider { border-top: 1px solid var(--divider-color, rgba(0,0,0,0.08)); margin: 4px 0; }
         .field-label { font-size: 12px; color: var(--secondary-text-color, #727272); margin-bottom: -6px; }
+        .hint { margin: -6px 0 0; font-size: 11px; color: var(--secondary-text-color, #9e9e9e); }
         .text-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); font-size: 14px; }
         .text-input:focus { outline: none; border-color: var(--primary-color, #e31837); }
         .toggle-row { display: flex; align-items: center; justify-content: space-between; font-size: 14px; color: var(--primary-text-color, #212121); }
@@ -85,7 +92,8 @@ class CrunchFitnessCardEditor extends HTMLElement {
       </style>
     `;
 
-    this.querySelectorAll('ha-entity-picker').forEach((picker, i) => {
+    // Location pickers
+    this.querySelectorAll('ha-entity-picker.entity-picker').forEach((picker, i) => {
       picker.hass = this._hass;
       picker.value = entities[i] || '';
       picker.includeDomains = ['sensor'];
@@ -110,6 +118,17 @@ class CrunchFitnessCardEditor extends HTMLElement {
       this._updateConfig('entities', this._config.entities);
       this._render();
     });
+
+    // Calendar picker
+    const calPicker = this.querySelector('#calendar-picker');
+    if (calPicker) {
+      calPicker.hass = this._hass;
+      calPicker.value = this._config.calendar_entity || '';
+      calPicker.includeDomains = ['calendar'];
+      calPicker.addEventListener('value-changed', (e) => {
+        this._updateConfig('calendar_entity', e.detail.value || null);
+      });
+    }
 
     this.querySelector('#title-input').addEventListener('change', (e) => {
       this._updateConfig('title', e.target.value || null);
@@ -145,6 +164,9 @@ class CrunchFitnessCard extends HTMLElement {
     this._config = {};
     this._hass = null;
     this._filterText = '';
+    this._displayedClasses = [];
+    this._addedClasses = new Set();   // class IDs added to calendar this session
+    this._escHandler = (e) => { if (e.key === 'Escape') this._closePopup(); };
   }
 
   static getConfigElement() { return document.createElement('crunch-fitness-card-editor'); }
@@ -153,14 +175,12 @@ class CrunchFitnessCard extends HTMLElement {
   setConfig(config) {
     let entities = config.entities?.length ? config.entities : config.entity ? [config.entity] : [];
     this._config = { title: null, show_all_classes: false, max_height: 400, ...config, entities };
-    // Pre-populate search from config if set (YAML only, not editor)
     if (config.instructor && !this._filterText) this._filterText = config.instructor;
     this._fullRender();
   }
 
   set hass(hass) {
     this._hass = hass;
-    // If structure is already rendered, just refresh the data portion
     if (this.shadowRoot.querySelector('#class-container')) {
       this._updateClassList();
     } else {
@@ -169,16 +189,16 @@ class CrunchFitnessCard extends HTMLElement {
   }
 
   getCardSize() {
-    const maxH = this._config.max_height || 400;
-    return Math.ceil(maxH / 50) + 2;
+    return Math.ceil((this._config.max_height || 400) / 50) + 2;
   }
 
-  // ── Data gathering ──────────────────────────────────────────────────────────
+  // ── Data ────────────────────────────────────────────────────────────────────
 
   _gatherClasses() {
-    if (!this._hass) return { source: [], totalToday: 0, totalWeek: 0, lastUpdated: null, multiLocation: false, errors: [] };
+    const empty = { source: [], totalToday: 0, totalWeek: 0, lastUpdated: null, multiLocation: false, errors: [] };
+    if (!this._hass) return empty;
     const entityIds = (this._config.entities || []).filter(Boolean);
-    if (!entityIds.length) return { source: [], totalToday: 0, totalWeek: 0, lastUpdated: null, multiLocation: false, errors: [] };
+    if (!entityIds.length) return empty;
 
     const multiLocation = entityIds.length > 1;
     let todayClasses = [], weekClasses = [], totalToday = 0, totalWeek = 0, lastUpdated = null;
@@ -223,7 +243,7 @@ class CrunchFitnessCard extends HTMLElement {
     );
   }
 
-  // ── Rendering ───────────────────────────────────────────────────────────────
+  // ── Full render (structure) ─────────────────────────────────────────────────
 
   _fullRender() {
     if (!this._config) return;
@@ -234,7 +254,7 @@ class CrunchFitnessCard extends HTMLElement {
     }
     if (!this._hass) return;
 
-    const { totalToday, totalWeek, lastUpdated, multiLocation, errors } = this._gatherClasses();
+    const { totalWeek, lastUpdated, errors } = this._gatherClasses();
 
     let title = this._config.title;
     if (!title) {
@@ -243,7 +263,6 @@ class CrunchFitnessCard extends HTMLElement {
     }
 
     const maxH = this._config.max_height || 400;
-
     const errorHtml = errors.length
       ? `<div class="error-row">Entity not found: ${errors.map(e => this._escapeHtml(e)).join(', ')}</div>`
       : '';
@@ -259,13 +278,7 @@ class CrunchFitnessCard extends HTMLElement {
 
         <div class="search-bar">
           <ha-icon icon="mdi:magnify"></ha-icon>
-          <input
-            id="search-input"
-            type="text"
-            placeholder="Filter by class, instructor…"
-            autocomplete="off"
-            spellcheck="false"
-          />
+          <input id="search-input" type="text" placeholder="Filter by class, instructor…" autocomplete="off" spellcheck="false" />
           <button id="search-clear" class="clear-btn" aria-label="Clear">✕</button>
         </div>
 
@@ -305,10 +318,11 @@ class CrunchFitnessCard extends HTMLElement {
         .date-separator { padding: 8px 8px 2px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--secondary-text-color, #727272); }
 
         /* Class rows */
-        .class-row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; transition: background 0.15s; }
-        .class-row:hover { background: var(--secondary-background-color, rgba(0,0,0,0.04)); }
+        .class-row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; transition: background 0.15s; cursor: pointer; }
+        .class-row:hover { background: var(--secondary-background-color, rgba(0,0,0,0.06)); }
         .class-row.past { opacity: 0.35; }
         .class-row.is-next { background: rgba(227,24,55,0.07); border-left: 3px solid #e31837; padding-left: 5px; }
+        .class-row.is-next:hover { background: rgba(227,24,55,0.12); }
 
         .class-time { display: flex; flex-direction: column; align-items: flex-end; min-width: 46px; flex-shrink: 0; }
         .time { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -339,13 +353,54 @@ class CrunchFitnessCard extends HTMLElement {
 
         /* Prompt */
         .prompt { padding: 20px 16px; text-align: center; color: var(--secondary-text-color, #727272); font-size: 14px; font-style: italic; }
+
+        /* ── Popup overlay ── */
+        .popup-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 9998; animation: fadeIn 0.15s ease; }
+        .popup-panel {
+          position: fixed; z-index: 9999;
+          top: 50%; left: 50%; transform: translate(-50%, -50%);
+          width: min(420px, calc(100vw - 32px));
+          background: var(--card-background-color, #fff);
+          color: var(--primary-text-color, #212121);
+          border-radius: 12px;
+          box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+          overflow: hidden;
+          animation: slideUp 0.18s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { transform: translate(-50%, -44%); opacity: 0; } to { transform: translate(-50%, -50%); opacity: 1; } }
+
+        .popup-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 16px 16px 12px; background: #e31837; color: #fff; }
+        .popup-class-name { font-size: 18px; font-weight: 700; line-height: 1.2; flex: 1; margin-right: 8px; }
+        .popup-close { background: rgba(255,255,255,0.2); border: none; color: #fff; width: 28px; height: 28px; border-radius: 50%; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .popup-close:hover { background: rgba(255,255,255,0.35); }
+
+        .popup-body { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+        .popup-detail { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; }
+        .popup-detail ha-icon { --mdc-icon-size: 16px; color: var(--secondary-text-color, #727272); margin-top: 1px; flex-shrink: 0; }
+        .popup-detail-text { line-height: 1.4; }
+        .popup-detail-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--secondary-text-color, #727272); }
+
+        .popup-footer { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 8px; }
+        .popup-cal-btn {
+          width: 100%; padding: 11px; border: none; border-radius: 8px;
+          background: #e31837; color: #fff; font-size: 14px; font-weight: 600;
+          cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+          transition: background 0.15s;
+        }
+        .popup-cal-btn:hover:not(:disabled) { background: #c41230; }
+        .popup-cal-btn:disabled { opacity: 0.6; cursor: default; }
+        .popup-cal-btn.added { background: #2e7d32; }
+        .popup-cal-btn ha-icon { --mdc-icon-size: 18px; color: #fff; }
+        .popup-no-cal { font-size: 11px; color: var(--secondary-text-color, #9e9e9e); text-align: center; }
+        .popup-error { font-size: 12px; color: var(--error-color, #c62828); text-align: center; display: none; }
+        .popup-reg-note { font-size: 11px; color: var(--secondary-text-color, #9e9e9e); text-align: center; }
       </style>
     `;
 
-    // Wire up search input
+    // Search input
     const input = this.shadowRoot.querySelector('#search-input');
     const clearBtn = this.shadowRoot.querySelector('#search-clear');
-
     input.value = this._filterText;
     if (this._filterText) clearBtn.classList.add('visible');
 
@@ -363,8 +418,20 @@ class CrunchFitnessCard extends HTMLElement {
       this._updateClassList();
     });
 
+    // Delegated click on class rows
+    const container = this.shadowRoot.querySelector('#class-container');
+    container.addEventListener('click', (e) => {
+      const row = e.target.closest('.class-row');
+      if (!row) return;
+      const idx = parseInt(row.dataset.idx, 10);
+      const cls = this._displayedClasses[idx];
+      if (cls) this._openPopup(cls);
+    });
+
     this._updateClassList();
   }
+
+  // ── Class list (partial refresh) ────────────────────────────────────────────
 
   _updateClassList() {
     const container = this.shadowRoot.querySelector('#class-container');
@@ -373,6 +440,7 @@ class CrunchFitnessCard extends HTMLElement {
     const { source, multiLocation } = this._gatherClasses();
     const filtered = this._applyFilter(source, this._filterText);
     const nextClass = filtered.find(c => !this._isPast(c.local_start_time)) || null;
+    this._displayedClasses = filtered;
 
     container.innerHTML = this._buildListHtml(filtered, nextClass, multiLocation);
   }
@@ -388,7 +456,7 @@ class CrunchFitnessCard extends HTMLElement {
     let html = '';
     let lastDate = null;
 
-    for (const cls of classes) {
+    classes.forEach((cls, idx) => {
       if (this._config.show_all_classes) {
         const dateLabel = this._formatDate(cls.local_start_time);
         if (dateLabel && dateLabel !== lastDate) {
@@ -406,18 +474,17 @@ class CrunchFitnessCard extends HTMLElement {
       if (cls.spots_available != null) {
         const avail = cls.spots_available, total = cls.total_spots;
         const ratio = total ? avail / total : null;
-        const cls2  = ratio !== null ? (ratio <= 0.25 ? 'spots-low' : ratio <= 0.5 ? 'spots-mid' : 'spots-ok') : '';
-        spotsHtml = `<span class="spots ${cls2}">${this._escapeHtml(total ? `${avail}/${total}` : String(avail))}</span>`;
+        const sc = ratio !== null ? (ratio <= 0.25 ? 'spots-low' : ratio <= 0.5 ? 'spots-mid' : 'spots-ok') : '';
+        spotsHtml = `<span class="spots ${sc}">${this._escapeHtml(total ? `${avail}/${total}` : String(avail))}</span>`;
       }
 
       const instructor = cls.instructor && cls.instructor !== 'TBD'
         ? `<span class="meta-item">${this._escapeHtml(cls.instructor)}</span>` : '';
       const room = cls.room ? `<span class="meta-item">${this._escapeHtml(cls.room)}</span>` : '';
-      const locBadge = multiLocation
-        ? `<span class="loc-badge">${this._escapeHtml(cls._location)}</span>` : '';
+      const locBadge = multiLocation ? `<span class="loc-badge">${this._escapeHtml(cls._location)}</span>` : '';
 
       html += `
-        <div class="class-row${past ? ' past' : ''}${isNext ? ' is-next' : ''}">
+        <div class="class-row${past ? ' past' : ''}${isNext ? ' is-next' : ''}" data-idx="${idx}" title="Tap to view details">
           <div class="class-time">
             <span class="time">${this._escapeHtml(time)}</span>
             ${dur ? `<span class="duration">${this._escapeHtml(dur)}</span>` : ''}
@@ -432,16 +499,170 @@ class CrunchFitnessCard extends HTMLElement {
           </div>
           <div class="class-right">${spotsHtml}</div>
         </div>`;
-    }
+    });
+
     return html;
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────────────
+  // ── Popup ────────────────────────────────────────────────────────────────────
+
+  _openPopup(cls) {
+    this._closePopup(); // remove any existing one
+    document.addEventListener('keydown', this._escHandler);
+
+    const startDt = new Date(cls.local_start_time);
+    const endMs   = startDt.getTime() + (cls.duration_min || 60) * 60 * 1000;
+    const endDt   = new Date(endMs);
+
+    const dateStr = isNaN(startDt)
+      ? ''
+      : startDt.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+    const timeRange = isNaN(startDt)
+      ? (cls.local_time || '')
+      : `${this._formatTime(cls.local_start_time)} – ${this._formatTime(endDt.toISOString())}`;
+    const dur  = cls.duration_min ? ` (${cls.duration_min} min)` : '';
+    const alreadyAdded = cls.id && this._addedClasses.has(cls.id);
+    const calConfigured = !!this._config.calendar_entity;
+
+    let spotsText = '';
+    if (cls.spots_available != null) {
+      spotsText = cls.total_spots
+        ? `${cls.spots_available} of ${cls.total_spots} spots available`
+        : `${cls.spots_available} spots available`;
+    }
+
+    let calBtnHtml = '';
+    if (!calConfigured) {
+      calBtnHtml = `<div class="popup-no-cal">Configure a calendar in card settings to enable booking reminders.</div>`;
+    } else if (alreadyAdded) {
+      calBtnHtml = `<button class="popup-cal-btn added" disabled><ha-icon icon="mdi:check"></ha-icon>Added to Calendar</button>`;
+    } else {
+      calBtnHtml = `<button class="popup-cal-btn" id="popup-add-cal"><ha-icon icon="mdi:calendar-plus"></ha-icon>Add to Calendar</button>`;
+    }
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'popup-backdrop';
+    backdrop.addEventListener('click', () => this._closePopup());
+
+    const panel = document.createElement('div');
+    panel.className = 'popup-panel';
+    panel.innerHTML = `
+      <div class="popup-header">
+        <div class="popup-class-name">${this._escapeHtml(cls.name || 'Class')}</div>
+        <button class="popup-close" aria-label="Close">✕</button>
+      </div>
+      <div class="popup-body">
+        ${dateStr ? `
+          <div class="popup-detail">
+            <ha-icon icon="mdi:calendar"></ha-icon>
+            <div class="popup-detail-text">${this._escapeHtml(dateStr)}</div>
+          </div>` : ''}
+        <div class="popup-detail">
+          <ha-icon icon="mdi:clock-outline"></ha-icon>
+          <div class="popup-detail-text">${this._escapeHtml(timeRange)}${this._escapeHtml(dur)}</div>
+        </div>
+        ${cls.instructor && cls.instructor !== 'TBD' ? `
+          <div class="popup-detail">
+            <ha-icon icon="mdi:account"></ha-icon>
+            <div class="popup-detail-text">${this._escapeHtml(cls.instructor)}</div>
+          </div>` : ''}
+        ${cls.room ? `
+          <div class="popup-detail">
+            <ha-icon icon="mdi:map-marker"></ha-icon>
+            <div class="popup-detail-text">${this._escapeHtml(cls.room)}${cls._location ? ' · ' + this._escapeHtml(cls._location) : ''}</div>
+          </div>` : (cls._location ? `
+          <div class="popup-detail">
+            <ha-icon icon="mdi:map-marker"></ha-icon>
+            <div class="popup-detail-text">${this._escapeHtml(cls._location)}</div>
+          </div>` : '')}
+        ${spotsText ? `
+          <div class="popup-detail">
+            <ha-icon icon="mdi:account-group"></ha-icon>
+            <div class="popup-detail-text">${this._escapeHtml(spotsText)}</div>
+          </div>` : ''}
+      </div>
+      <div class="popup-footer">
+        ${calBtnHtml}
+        <div class="popup-error" id="popup-error"></div>
+        ${calConfigured && !alreadyAdded ? `<div class="popup-reg-note">Registration opens 22 hours before class</div>` : ''}
+      </div>
+    `;
+
+    panel.querySelector('.popup-close').addEventListener('click', () => this._closePopup());
+
+    const addBtn = panel.querySelector('#popup-add-cal');
+    if (addBtn) {
+      addBtn.addEventListener('click', () => this._addToCalendar(cls, panel));
+    }
+
+    this.shadowRoot.appendChild(backdrop);
+    this.shadowRoot.appendChild(panel);
+  }
+
+  _closePopup() {
+    this.shadowRoot.querySelector('.popup-backdrop')?.remove();
+    this.shadowRoot.querySelector('.popup-panel')?.remove();
+    document.removeEventListener('keydown', this._escHandler);
+  }
+
+  async _addToCalendar(cls, panel) {
+    const btn = panel.querySelector('#popup-add-cal');
+    const errEl = panel.querySelector('#popup-error');
+    if (!btn) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<ha-icon icon="mdi:loading"></ha-icon>Adding…';
+
+    const startDt = new Date(cls.local_start_time);
+    const endMs   = startDt.getTime() + (cls.duration_min || 60) * 60 * 1000;
+
+    const fmtLocal = (d) => {
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:00`;
+    };
+
+    const descParts = [
+      cls.instructor && cls.instructor !== 'TBD' ? `Instructor: ${cls.instructor}` : '',
+      cls.room                                   ? `Room: ${cls.room}`             : '',
+      cls.spots_available != null
+        ? `Spots: ${cls.spots_available}${cls.total_spots ? '/' + cls.total_spots : ''}`
+        : '',
+      cls._location ? `Gym: Crunch ${cls._location}` : '',
+      'Registration opens 22 hours before class start.',
+    ].filter(Boolean).join('\n');
+
+    try {
+      await this._hass.callService('calendar', 'create_event', {
+        entity_id: this._config.calendar_entity,
+        summary: `${cls.name}${cls._location ? ' — Crunch ' + cls._location : ''}`,
+        start_date_time: fmtLocal(startDt),
+        end_date_time:   fmtLocal(new Date(endMs)),
+        description: descParts,
+      });
+
+      if (cls.id) this._addedClasses.add(cls.id);
+      btn.innerHTML = '<ha-icon icon="mdi:check"></ha-icon>Added to Calendar';
+      btn.classList.add('added');
+
+      // Hide the registration note once added
+      panel.querySelector('.popup-reg-note')?.remove();
+
+    } catch (err) {
+      btn.disabled = false;
+      btn.innerHTML = '<ha-icon icon="mdi:calendar-plus"></ha-icon>Add to Calendar';
+      if (errEl) {
+        errEl.textContent = 'Failed to add event. Check that your calendar is writable.';
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────────
 
   _formatTime(t) {
     if (!t) return '';
     try { const d = new Date(t); if (!isNaN(d)) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch (_) {}
-    return t;
+    return String(t);
   }
 
   _formatDate(t) {
@@ -511,5 +732,5 @@ window.customCards.push({
   type: 'crunch-fitness-card',
   name: 'Crunch Fitness Card',
   preview: false,
-  description: 'Crunch Fitness class schedule with live search, instructor filtering, and spot counts.',
+  description: 'Crunch Fitness class schedule with live search, spot counts, and calendar booking.',
 });
