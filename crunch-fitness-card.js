@@ -243,9 +243,6 @@ class CrunchFitnessCard extends HTMLElement {
     }
 
     const maxH = this._config.max_height || 400;
-    const sectionLabel = this._config.show_all_classes
-      ? `This week — ${totalWeek} classes`
-      : `Today — ${totalToday} class${totalToday !== 1 ? 'es' : ''}`;
 
     const errorHtml = errors.length
       ? `<div class="error-row">Entity not found: ${errors.map(e => this._escapeHtml(e)).join(', ')}</div>`
@@ -270,10 +267,6 @@ class CrunchFitnessCard extends HTMLElement {
             spellcheck="false"
           />
           <button id="search-clear" class="clear-btn" aria-label="Clear">✕</button>
-        </div>
-
-        <div class="section-bar">
-          <span id="section-label" class="section-label">${this._escapeHtml(sectionLabel)}</span>
         </div>
 
         <div id="class-container" class="class-container" style="max-height:${maxH}px"></div>
@@ -301,10 +294,6 @@ class CrunchFitnessCard extends HTMLElement {
         .clear-btn { background: none; border: none; color: var(--secondary-text-color, #9e9e9e); cursor: pointer; font-size: 12px; padding: 0 2px; line-height: 1; display: none; }
         .clear-btn.visible { display: block; }
         .clear-btn:hover { color: var(--primary-text-color, #212121); }
-
-        /* Section bar */
-        .section-bar { padding: 6px 14px 4px; }
-        .section-label { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: var(--secondary-text-color, #727272); text-transform: uppercase; }
 
         /* Scrollable class list */
         .class-container { overflow-y: auto; padding: 2px 6px 4px; scrollbar-width: thin; scrollbar-color: var(--divider-color, #ccc) transparent; }
