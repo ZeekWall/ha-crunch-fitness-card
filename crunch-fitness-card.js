@@ -671,19 +671,20 @@ class CrunchFitnessCard extends HTMLElement {
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
-  // Build a correct local Date from cls.date + cls.local_time.
-  // Avoids timezone issues: local_start_time may carry a UTC offset that would
-  // shift the time when parsed with new Date().
+  // Build a local Date from cls.date + cls.local_time.
+  // The integration converts UTC API timestamps to HA local time before setting
+  // these fields, so they are reliable for direct use.
+  // local_start_time is the original UTC API value (Z suffix) and must not be
+  // used with new Date() without proper UTC parsing.
   _classDate(cls) {
     if (cls.date && cls.local_time) {
       const [y, mo, d] = cls.date.split('-').map(Number);
       const [h, m]     = cls.local_time.split(':').map(Number);
       if (!isNaN(y) && !isNaN(h)) return new Date(y, mo - 1, d, h, m, 0, 0);
     }
-    // Fallback: strip any timezone suffix so Date() treats it as local time
+    // Fallback: parse local_start_time as UTC (Z suffix); browser converts to local
     if (cls.local_start_time) {
-      const stripped = cls.local_start_time.replace(/Z$/i, '').replace(/[+-]\d{2}:?\d{2}$/, '');
-      const dt = new Date(stripped);
+      const dt = new Date(cls.local_start_time);
       if (!isNaN(dt)) return dt;
     }
     return null;
