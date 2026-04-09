@@ -448,7 +448,7 @@ class CrunchFitnessCard extends HTMLElement {
 
     const { source, multiLocation } = this._gatherClasses();
     const filtered = this._applyFilter(source, this._filterText);
-    const nextClass = filtered.find(c => !this._isPast(c.local_start_time)) || null;
+    const nextClass = filtered.find(c => !this._isClassPast(c)) || null;
     this._displayedClasses = filtered;
 
     container.innerHTML = this._buildListHtml(filtered, nextClass, multiLocation);
@@ -467,16 +467,16 @@ class CrunchFitnessCard extends HTMLElement {
 
     classes.forEach((cls, idx) => {
       if (this._config.show_all_classes) {
-        const dateLabel = this._formatDate(cls.local_start_time);
+        const dateLabel = this._fmtClassDate(cls);
         if (dateLabel && dateLabel !== lastDate) {
           html += `<div class="date-separator">${this._escapeHtml(dateLabel)}</div>`;
           lastDate = dateLabel;
         }
       }
 
-      const past   = this._isPast(cls.local_start_time);
+      const past   = this._isClassPast(cls);
       const isNext = this._isNext(cls, nextClass);
-      const time   = this._formatTime(cls.local_start_time) || cls.local_time || '';
+      const time   = this._fmtLocalTime(cls.local_time);
       const dur    = cls.duration_min ? `${cls.duration_min}m` : '';
 
       let spotsHtml = '';
@@ -519,16 +519,13 @@ class CrunchFitnessCard extends HTMLElement {
     this._closePopup(); // remove any existing one
     document.addEventListener('keydown', this._escHandler);
 
-    const startDt = new Date(cls.local_start_time);
-    const endMs   = startDt.getTime() + (cls.duration_min || 60) * 60 * 1000;
-    const endDt   = new Date(endMs);
-
-    const dateStr = isNaN(startDt)
-      ? ''
-      : startDt.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
-    const timeRange = isNaN(startDt)
-      ? (cls.local_time || '')
-      : `${this._formatTime(cls.local_start_time)} – ${this._formatTime(endDt.toISOString())}`;
+    const startDt  = this._classDate(cls);
+    const dateStr  = startDt
+      ? startDt.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
+      : '';
+    const startFmt = this._fmtLocalTime(cls.local_time);
+    const endFmt   = cls.duration_min ? this._fmtLocalTimeAdd(cls.local_time, cls.duration_min) : '';
+    const timeRange = endFmt ? `${startFmt} – ${endFmt}` : startFmt;
     const dur  = cls.duration_min ? ` (${cls.duration_min} min)` : '';
     const alreadyAdded = cls.id && this._addedClasses.has(cls.id);
     const calConfigured = !!this._config.calendar_entity;
@@ -622,8 +619,14 @@ class CrunchFitnessCard extends HTMLElement {
     btn.disabled = true;
     btn.innerHTML = '<ha-icon icon="mdi:loading"></ha-icon>Adding…';
 
-    const startDt = new Date(cls.local_start_time);
-    const endMs   = startDt.getTime() + (cls.duration_min || 60) * 60 * 1000;
+    const startDt = this._classDate(cls);
+    if (!startDt) {
+      if (errEl) { errEl.textContent = 'Cannot create event: class has no valid time.'; errEl.style.display = 'block'; }
+      btn.disabled = false;
+      btn.innerHTML = '<ha-icon icon="mdi:calendar-plus"></ha-icon>Add to Calendar';
+      return;
+    }
+    const endMs = startDt.getTime() + (cls.duration_min || 60) * 60 * 1000;
 
     const fmtLocal = (d) => {
       const p = n => String(n).padStart(2, '0');
@@ -667,6 +670,64 @@ class CrunchFitnessCard extends HTMLElement {
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
+
+  // Build a correct local Date from cls.date + cls.local_time.
+  // Avoids timezone issues: local_start_time may carry a UTC offset that would
+  // shift the time when parsed with new Date().
+  _classDate(cls) {
+    if (cls.date && cls.local_time) {
+      const [y, mo, d] = cls.date.split('-').map(Number);
+      const [h, m]     = cls.local_time.split(':').map(Number);
+      if (!isNaN(y) && !isNaN(h)) return new Date(y, mo - 1, d, h, m, 0, 0);
+    }
+    // Fallback: strip any timezone suffix so Date() treats it as local time
+    if (cls.local_start_time) {
+      const stripped = cls.local_start_time.replace(/Z$/i, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+      const dt = new Date(stripped);
+      if (!isNaN(dt)) return dt;
+    }
+    return null;
+  }
+
+  // True if the class has already started (timezone-safe)
+  _isClassPast(cls) {
+    const d = this._classDate(cls);
+    return d ? d < new Date() : false;
+  }
+
+  // Format "HH:MM" as a locale time string (e.g. "10:30 AM") — no Date parsing needed
+  _fmtLocalTime(hhmm) {
+    if (!hhmm) return '';
+    const [h, m] = hhmm.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return hhmm;
+    return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  // Add N minutes to "HH:MM" and return locale time string
+  _fmtLocalTimeAdd(hhmm, mins) {
+    if (!hhmm || !mins) return '';
+    const [h, m] = hhmm.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return '';
+    const total = h * 60 + m + mins;
+    return new Date(2000, 0, 1, Math.floor(total / 60) % 24, total % 60)
+      .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  // Format class date using cls.date ("YYYY-MM-DD") directly — avoids timezone issues
+  _fmtClassDate(cls) {
+    if (cls.date) {
+      const [y, mo, d] = cls.date.split('-').map(Number);
+      if (!isNaN(y)) {
+        const dt    = new Date(y, mo - 1, d);
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const tom   = new Date(today); tom.setDate(today.getDate() + 1);
+        if (dt.getTime() === today.getTime()) return 'Today';
+        if (dt.getTime() === tom.getTime()) return 'Tomorrow';
+        return dt.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+      }
+    }
+    return this._formatDate(cls.local_start_time);
+  }
 
   _formatTime(t) {
     if (!t) return '';
